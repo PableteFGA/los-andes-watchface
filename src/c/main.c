@@ -189,7 +189,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     int32_t min_angle  =  t->tm_min  * TRIG_MAX_ANGLE / 60;
     int32_t sec_angle  =  t->tm_sec  * TRIG_MAX_ANGLE / 60;
 
-    // Sub-seconds dial tick marks — 12 radial lines around the seconds face
+    // ── Seconds layer (below hour and minute hands) ──────────────────────────
     graphics_context_set_stroke_color(ctx, GColorWhite);
     graphics_context_set_stroke_width(ctx, 1);
     for (int i = 0; i < 12; i++) {
@@ -202,10 +202,11 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
                          SEC_CENTER.y - trig_round(c * 33) };
         graphics_draw_line(ctx, inner, outer);
     }
+    draw_sec_hand(ctx, sec_angle);
 
+    // ── Hour and minute hands (on top of everything) ─────────────────────────
     draw_hour_hand(ctx, hour_angle);
     draw_min_hand(ctx, min_angle);
-    draw_sec_hand(ctx, sec_angle);
 
     // Center axle dot for hour/minute
     graphics_context_set_fill_color(ctx, GColorDarkGray);
