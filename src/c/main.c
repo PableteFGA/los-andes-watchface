@@ -4,16 +4,35 @@
 //
 //   Hour:    boss R=10, tip y=-80  (cutoff y=-72),  center = s_center
 //   Minute:  boss R=8,  tip y=-119 (cutoff y=-109), center = s_center
-//   Seconds: boss R=3,  tip y=-34  (cutoff y=-31),  center = (129,184)
+//   Seconds: boss R=3,  tip y=-34  (cutoff y=-31),  center = (130,184)
 //            40 px total (tip to tail). Boss: white, NO outline.
 
 static Window  *s_window;
 static Layer   *s_canvas;
 static GPoint   s_center;
 static GBitmap *s_background;
+static GBitmap *s_battery_icon;
 
-// Fixed pivot for the seconds hand (not the watch center)
+// Fixed pivot for the seconds hand / battery display (not the watch center)
 static const GPoint SEC_CENTER = {130, 184};
+
+// true  → seconds hand + tick marks
+// false → battery indicator (9 segments, 3 zones: red / dark-blue / white)
+static bool s_display_seconds = true;
+
+// Shake animation: hour does 1 revolution, minute does 3, over 6 seconds
+#define ANIM_DURATION_MS 3000
+#define ANIM_INTERVAL_MS   50
+
+static AppTimer *s_anim_timer    = NULL;
+static uint32_t  s_anim_elapsed  = 0;
+static int32_t   s_anim_hour_start = 0;
+static int32_t   s_anim_min_start  = 0;
+
+// Battery display geometry:
+// 11 segments over the lower semicircle (180° arc), CCW from 270° (left=0%)
+// through 180° (bottom=50%) to 90° (right=100%).
+// Step = -18° per segment (CCW direction).
 
 // ── Hour hand ──────────────────────────────────────────────────────────────
 static GPath *s_hour_body;
@@ -68,7 +87,7 @@ static GPoint rotate_at(GPoint pt, int32_t angle, GPoint center) {
     };
 }
 
-// Convenience: rotate around the main watch center
+
 static GPoint rotate_gpoint(GPoint pt, int32_t angle) {
     return rotate_at(pt, angle, s_center);
 }
@@ -88,8 +107,7 @@ static void fill_hand(GContext *ctx, int32_t angle,
     gpath_draw_filled(ctx, tip);
 }
 
-// segs[]: pairs of {from, to} points; boss arcs drawn instead of full circle.
-// boss_half_ang = asin(shaft_half_width / boss_r) in TRIG units.
+
 static void outline_hand(GContext *ctx, int32_t angle,
                          int boss_r, int32_t boss_half_ang,
                          const GPoint *segs, int n) {
@@ -102,8 +120,9 @@ static void outline_hand(GContext *ctx, int32_t angle,
             rotate_gpoint(segs[i + 1], angle));
     }
 
-    GRect br = GRect(s_center.x - boss_r, s_center.y - boss_r,
-                     2 * boss_r, 2 * boss_r);
+    // Arc at boss_r+1 so fill_circle (radius boss_r) cannot cover it
+    GRect br = GRect(s_center.x - boss_r - 1, s_center.y - boss_r - 1,
+                     2 * boss_r + 2, 2 * boss_r + 2);
     int32_t half = TRIG_MAX_ANGLE / 2;
 
     // Right arc (CW through 90°) and left arc (CW through 270°)
@@ -119,8 +138,8 @@ static void draw_hour_hand(GContext *ctx, int32_t angle) {
         { 3, -9}, { 5,-72},   {-5,-72}, {-3, -9},
         {-3,  9}, {-3, 20},   {-3, 20}, { 3, 20},   { 3, 20}, { 3,  9},
     };
-    fill_hand(ctx, angle, s_hour_body, s_hour_tip, 10);
     outline_hand(ctx, angle, 10, 17 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
+    fill_hand(ctx, angle, s_hour_body, s_hour_tip, 10);
 }
 
 static void draw_min_hand(GContext *ctx, int32_t angle) {
@@ -128,8 +147,8 @@ static void draw_min_hand(GContext *ctx, int32_t angle) {
         { 3, -7}, { 5,-109},  {-5,-109},{-3,  -7},
         {-3,  7}, {-3,  22},  {-3, 22}, { 3,  22},  { 3, 22}, { 3,  7},
     };
-    fill_hand(ctx, angle, s_min_body, s_min_tip, 8);
     outline_hand(ctx, angle, 8, 22 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
+    fill_hand(ctx, angle, s_min_body, s_min_tip, 8);
 }
 
 // ── Seconds hand ────────────────────────────────────────────────────────────
@@ -139,7 +158,7 @@ static void draw_sec_hand(GContext *ctx, int32_t angle) {
     GPoint mid = rotate_at(GPoint(0, -30), angle, SEC_CENTER);
     GPoint tip = rotate_at(GPoint(0, -34), angle, SEC_CENTER);
 
-    // Outline pass (light gray, +2px wider)
+    // Outline pass 
     graphics_context_set_stroke_color(ctx, GColorLightGray);
     graphics_context_set_stroke_width(ctx, 5);
     graphics_draw_line(ctx, SEC_CENTER, cw);
@@ -164,6 +183,92 @@ static void draw_sec_hand(GContext *ctx, int32_t angle) {
     graphics_fill_circle(ctx, SEC_CENTER, 1);
 }
 
+// ── Battery indicator ───────────────────────────────────────────────────────
+// 9 visible segments (clock positions 5,6,7 hidden at the bottom).
+// Segments light up from bottom-left (0 %) to bottom-right (100 %).
+// Unlit segments are drawn dim (GColorDarkGray) so the gauge shape is visible.
+static void draw_battery_display(GContext *ctx) {
+    BatteryChargeState bs = battery_state_service_peek();
+    int pct = (int)bs.charge_percent;
+
+    // Lower semicircle: start=270° (left=0%), end=90° (right=100%), CCW through 180°
+    int32_t start = 3 * TRIG_MAX_ANGLE / 4;        // 270°
+    int32_t span  = TRIG_MAX_ANGLE / 2;             // 180°
+    int32_t step  = -(int32_t)(span / 10);          // -18° per segment (CCW)
+
+    // 11 white segments
+    graphics_context_set_stroke_color(ctx, GColorWhite);
+    graphics_context_set_stroke_width(ctx, 1);
+    for (int b = 0; b < 11; b++) {
+        int32_t a  = (start + b * step + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
+        int32_t sn = sin_lookup(a);
+        int32_t cn = cos_lookup(a);
+        GPoint inner = { SEC_CENTER.x + trig_round(sn * 28),
+                         SEC_CENTER.y - trig_round(cn * 28) };
+        GPoint outer = { SEC_CENTER.x + trig_round(sn * 33),
+                         SEC_CENTER.y - trig_round(cn * 33) };
+        graphics_draw_line(ctx, inner, outer);
+    }
+
+    // Labels at "0" (270°), "50" (180°), "100" (90°) — radius 18, inward from segments
+    GFont small_font = fonts_get_system_font(FONT_KEY_GOTHIC_09);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    static const int   label_segs[3]  = {0, 5, 10};
+    static const char *label_texts[3] = {"0", "50", "100"};
+    for (int i = 0; i < 3; i++) {
+        int32_t a  = (start + label_segs[i] * step + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
+        int32_t sn = sin_lookup(a);
+        int32_t cn = cos_lookup(a);
+        int16_t tx = SEC_CENTER.x + trig_round(sn * 18);
+        int16_t ty = SEC_CENTER.y - trig_round(cn * 18);
+        graphics_draw_text(ctx, label_texts[i], small_font,
+                           GRect(tx - 10, ty - 5, 20, 10),
+                           GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+    }
+
+    // Pointer: 0% → 270°, 100% → 90°, going CCW through bottom
+    int32_t bat_angle = (start - (int32_t)pct * span / 100 + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
+    draw_sec_hand(ctx, bat_angle);
+
+    // Battery icon on top of the boss (drawn last in this layer, still below hour/min hands)
+    if (s_battery_icon) {
+        GSize icon_size = gbitmap_get_bounds(s_battery_icon).size;
+        GRect icon_rect = GRect(SEC_CENTER.x - icon_size.w / 2,
+                                SEC_CENTER.y - icon_size.h / 2,
+                                icon_size.w, icon_size.h);
+        graphics_context_set_compositing_mode(ctx, GCompOpSet);
+        graphics_draw_bitmap_in_rect(ctx, s_battery_icon, icon_rect);
+    }
+}
+
+// ============================================================================
+// SHAKE ANIMATION
+// ============================================================================
+
+static void anim_timer_cb(void *context) {
+    s_anim_elapsed += ANIM_INTERVAL_MS;
+    if (s_anim_elapsed < ANIM_DURATION_MS) {
+        s_anim_timer = app_timer_register(ANIM_INTERVAL_MS, anim_timer_cb, NULL);
+    } else {
+        s_anim_elapsed = ANIM_DURATION_MS;
+        s_anim_timer   = NULL;
+    }
+    if (s_canvas) layer_mark_dirty(s_canvas);
+}
+
+static void accel_tap_handler(AccelAxisType axis, int32_t direction) {
+    if (s_anim_timer) {
+        app_timer_cancel(s_anim_timer);
+    }
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    s_anim_hour_start = ((t->tm_hour % 12) * TRIG_MAX_ANGLE / 12) +
+                        (t->tm_min  * TRIG_MAX_ANGLE / 12 / 60);
+    s_anim_min_start  =  t->tm_min  * TRIG_MAX_ANGLE / 60;
+    s_anim_elapsed    = 0;
+    s_anim_timer      = app_timer_register(ANIM_INTERVAL_MS, anim_timer_cb, NULL);
+}
+
 // ============================================================================
 // CANVAS
 // ============================================================================
@@ -184,25 +289,40 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     struct tm *t = localtime(&now);
     if (!t) return;
 
-    int32_t hour_angle = ((t->tm_hour % 12) * TRIG_MAX_ANGLE / 12) +
-                         (t->tm_min  * TRIG_MAX_ANGLE / 12 / 60);
-    int32_t min_angle  =  t->tm_min  * TRIG_MAX_ANGLE / 60;
-    int32_t sec_angle  =  t->tm_sec  * TRIG_MAX_ANGLE / 60;
+    int32_t hour_angle, min_angle;
+    int32_t sec_angle = t->tm_sec * TRIG_MAX_ANGLE / 30;
 
-    // ── Seconds layer (below hour and minute hands) ──────────────────────────
-    graphics_context_set_stroke_color(ctx, GColorWhite);
-    graphics_context_set_stroke_width(ctx, 1);
-    for (int i = 0; i < 12; i++) {
-        int32_t a = i * TRIG_MAX_ANGLE / 12;
-        int32_t s = sin_lookup(a);
-        int32_t c = cos_lookup(a);
-        GPoint inner = { SEC_CENTER.x + trig_round(s * 28),
-                         SEC_CENTER.y - trig_round(c * 28) };
-        GPoint outer = { SEC_CENTER.x + trig_round(s * 33),
-                         SEC_CENTER.y - trig_round(c * 33) };
-        graphics_draw_line(ctx, inner, outer);
+    if (s_anim_timer || s_anim_elapsed == ANIM_DURATION_MS) {
+        // Animated: hour = 1 rev in 6 s, minute = 3 rev in 6 s
+        int32_t p = (int32_t)s_anim_elapsed;
+        hour_angle = (int32_t)(s_anim_hour_start +
+                     (int64_t)p * TRIG_MAX_ANGLE / ANIM_DURATION_MS) % TRIG_MAX_ANGLE;
+        min_angle  = (int32_t)(s_anim_min_start  +
+                     (int64_t)p * 3 * TRIG_MAX_ANGLE / ANIM_DURATION_MS) % TRIG_MAX_ANGLE;
+    } else {
+        hour_angle = ((t->tm_hour % 12) * TRIG_MAX_ANGLE / 12) +
+                     (t->tm_min  * TRIG_MAX_ANGLE / 12 / 60);
+        min_angle  =  t->tm_min  * TRIG_MAX_ANGLE / 60;
     }
-    draw_sec_hand(ctx, sec_angle);
+
+    // ── Seconds / battery layer (below hour and minute hands) ────────────────
+    if (s_display_seconds) {
+        graphics_context_set_stroke_color(ctx, GColorWhite);
+        graphics_context_set_stroke_width(ctx, 1);
+        for (int i = 0; i < 12; i++) {
+            int32_t a = i * TRIG_MAX_ANGLE / 12;
+            int32_t s = sin_lookup(a);
+            int32_t c = cos_lookup(a);
+            GPoint inner = { SEC_CENTER.x + trig_round(s * 28),
+                             SEC_CENTER.y - trig_round(c * 28) };
+            GPoint outer = { SEC_CENTER.x + trig_round(s * 33),
+                             SEC_CENTER.y - trig_round(c * 33) };
+            graphics_draw_line(ctx, inner, outer);
+        }
+        draw_sec_hand(ctx, sec_angle);
+    } else {
+        draw_battery_display(ctx);
+    }
 
     // ── Hour and minute hands (on top of everything) ─────────────────────────
     draw_hour_hand(ctx, hour_angle);
@@ -236,7 +356,8 @@ static void window_load(Window *window) {
     layer_set_update_proc(s_canvas, canvas_update_proc);
     layer_add_child(root, s_canvas);
 
-    s_background = gbitmap_create_with_resource(RESOURCE_ID_BACKGROUND);
+    s_background   = gbitmap_create_with_resource(RESOURCE_ID_BACKGROUND);
+    s_battery_icon = gbitmap_create_with_resource(RESOURCE_ID_BATTERY_ICON);
 
     s_hour_body = gpath_create(&(GPathInfo){ ARRAY_LENGTH(s_hour_body_pts), s_hour_body_pts });
     s_hour_tip  = gpath_create(&(GPathInfo){ ARRAY_LENGTH(s_hour_tip_pts),  s_hour_tip_pts  });
@@ -249,7 +370,8 @@ static void window_unload(Window *window) {
     if (s_hour_tip)   { gpath_destroy(s_hour_tip);   s_hour_tip   = NULL; }
     if (s_min_body)   { gpath_destroy(s_min_body);   s_min_body   = NULL; }
     if (s_min_tip)    { gpath_destroy(s_min_tip);    s_min_tip    = NULL; }
-    if (s_background) { gbitmap_destroy(s_background); s_background = NULL; }
+    if (s_background)   { gbitmap_destroy(s_background);   s_background   = NULL; }
+    if (s_battery_icon) { gbitmap_destroy(s_battery_icon); s_battery_icon = NULL; }
     if (s_canvas)     { layer_destroy(s_canvas);        s_canvas     = NULL; }
 }
 
@@ -265,10 +387,13 @@ static void init(void) {
     });
     window_stack_push(s_window, true);
     tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
+    accel_tap_service_subscribe(accel_tap_handler);
 }
 
 static void deinit(void) {
     tick_timer_service_unsubscribe();
+    accel_tap_service_unsubscribe();
+    if (s_anim_timer) { app_timer_cancel(s_anim_timer); s_anim_timer = NULL; }
     if (s_window) { window_destroy(s_window); s_window = NULL; }
 }
 

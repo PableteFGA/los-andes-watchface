@@ -18,6 +18,11 @@
           "type": "bitmap",
           "name": "BACKGROUND",
           "file": "images/los_andes_bg.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "BATTERY_ICON",
+          "file": "images/battery.png"
         }
       ]
     }
