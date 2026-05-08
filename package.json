@@ -1,0 +1,25 @@
+{
+  "name": "los-andes-test",
+  "author": "Pablo Godoy",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Los Andes Test",
+    "uuid": "3fe83d02-41b0-4373-acb9-ba853cff8445",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": ["gabbro"],
+    "watchapp": { "watchface": true },
+    "resources": {
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "BACKGROUND",
+          "file": "images/los_andes_bg.png"
+        }
+      ]
+    }
+  }
+}
