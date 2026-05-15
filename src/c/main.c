@@ -14,7 +14,11 @@ static GBitmap *s_background;
 static GBitmap *s_battery_icon;
 
 // Fixed pivot for the seconds hand / battery display (not the watch center)
+#ifdef PBL_PLATFORM_EMERY
+static const GPoint SEC_CENTER = {100, 155};
+#else
 static const GPoint SEC_CENTER = {130, 184};
+#endif
 
 // true  → seconds hand + tick marks
 // false → battery indicator (9 segments, 3 zones: red / dark-blue / white)
@@ -38,6 +42,16 @@ static int32_t   s_anim_min_start  = 0;
 static GPath *s_hour_body;
 static GPath *s_hour_tip;
 
+#ifdef PBL_PLATFORM_EMERY
+// tip at -65 → exactly 35px from lateral border (100 - 65 = 35px)
+static GPoint s_hour_body_pts[] = {
+    { 3,  -9},   { 5, -59},   {-5, -59},   {-3,  -9},
+    {-3,   9},   {-3,  20},   { 3,  20},   { 3,   9},
+};
+static GPoint s_hour_tip_pts[] = {
+    { 6, -59},   { 3, -63},   { 2, -65},   {-2, -65},   {-3, -63},   {-6, -59},
+};
+#else
 static GPoint s_hour_body_pts[] = {
     { 3,  -9},   { 5, -72},   {-5, -72},   {-3,  -9},
     {-3,   9},   {-3,  20},   { 3,  20},   { 3,   9},
@@ -45,11 +59,22 @@ static GPoint s_hour_body_pts[] = {
 static GPoint s_hour_tip_pts[] = {
     { 6, -72},   { 3, -77},   { 2, -80},   {-2, -80},   {-3, -77},   {-6, -72},
 };
+#endif
 
 // ── Minute hand ────────────────────────────────────────────────────────────
 static GPath *s_min_body;
 static GPath *s_min_tip;
 
+#ifdef PBL_PLATFORM_EMERY
+// tip at -90 → exactly 10px from lateral border (100 - 90 = 10px)
+static GPoint s_min_body_pts[] = {
+    { 2,  -5},   { 4, -82},   {-4, -82},   {-2,  -5},
+    {-2,   5},   {-2,  16},   { 2,  16},   { 2,   5},
+};
+static GPoint s_min_tip_pts[] = {
+    { 4, -82},   { 2, -87},   { 1, -90},   {-1, -90},   {-2, -87},   {-4, -82},
+};
+#else
 static GPoint s_min_body_pts[] = {
     { 3,  -7},   { 5,-109},   {-5,-109},   {-3,  -7},
     {-3,   7},   {-3,  22},   { 3,  22},   { 3,   7},
@@ -57,6 +82,7 @@ static GPoint s_min_body_pts[] = {
 static GPoint s_min_tip_pts[] = {
     { 6,-109},   { 3,-115},   { 2,-119},   {-2,-119},   {-3,-115},   {-6,-109},
 };
+#endif
 
 // ── Seconds hand ───────────────────────────────────────────────────────────
 // Drawn with stroke_width lines — reliable at all rotation angles.
@@ -134,20 +160,35 @@ static void outline_hand(GContext *ctx, int32_t angle,
 }
 
 static void draw_hour_hand(GContext *ctx, int32_t angle) {
+#ifdef PBL_PLATFORM_EMERY
+    static const GPoint segs[] = {
+        { 3, -9}, { 5,-59},   {-5,-59}, {-3, -9},
+        {-3,  9}, {-3, 20},   {-3, 20}, { 3, 20},   { 3, 20}, { 3,  9},
+    };
+#else
     static const GPoint segs[] = {
         { 3, -9}, { 5,-72},   {-5,-72}, {-3, -9},
         {-3,  9}, {-3, 20},   {-3, 20}, { 3, 20},   { 3, 20}, { 3,  9},
     };
+#endif
     outline_hand(ctx, angle, 10, 17 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
     fill_hand(ctx, angle, s_hour_body, s_hour_tip, 10);
 }
 
 static void draw_min_hand(GContext *ctx, int32_t angle) {
+#ifdef PBL_PLATFORM_EMERY
+    static const GPoint segs[] = {
+        { 2, -5}, { 4, -82},  {-4, -82},{-2,  -5},
+        {-2,  5}, {-2,  16},  {-2, 16}, { 2,  16},  { 2, 16}, { 2,  5},
+    };
+    outline_hand(ctx, angle, 8, 15 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
+#else
     static const GPoint segs[] = {
         { 3, -7}, { 5,-109},  {-5,-109},{-3,  -7},
         {-3,  7}, {-3,  22},  {-3, 22}, { 3,  22},  { 3, 22}, { 3,  7},
     };
     outline_hand(ctx, angle, 8, 22 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
+#endif
     fill_hand(ctx, angle, s_min_body, s_min_tip, 8);
 }
 
@@ -196,17 +237,18 @@ static void draw_battery_display(GContext *ctx) {
     int32_t span  = TRIG_MAX_ANGLE / 2;             // 180°
     int32_t step  = -(int32_t)(span / 10);          // -18° per segment (CCW)
 
-    // 11 white segments
+    // 11 white tick marks — inner radius matches pointer tip (r=34) exactly,
+    // so the pointer tip pixel == tick inner pixel for zero angular misalignment.
     graphics_context_set_stroke_color(ctx, GColorWhite);
     graphics_context_set_stroke_width(ctx, 1);
     for (int b = 0; b < 11; b++) {
         int32_t a  = (start + b * step + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
         int32_t sn = sin_lookup(a);
         int32_t cn = cos_lookup(a);
-        GPoint inner = { SEC_CENTER.x + trig_round(sn * 28),
-                         SEC_CENTER.y - trig_round(cn * 28) };
-        GPoint outer = { SEC_CENTER.x + trig_round(sn * 33),
-                         SEC_CENTER.y - trig_round(cn * 33) };
+        GPoint inner = { SEC_CENTER.x + trig_round(sn * 34),
+                         SEC_CENTER.y - trig_round(cn * 34) };
+        GPoint outer = { SEC_CENTER.x + trig_round(sn * 40),
+                         SEC_CENTER.y - trig_round(cn * 40) };
         graphics_draw_line(ctx, inner, outer);
     }
 
@@ -226,8 +268,9 @@ static void draw_battery_display(GContext *ctx) {
                            GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 
-    // Pointer: 0% → 270°, 100% → 90°, going CCW through bottom
-    int32_t bat_angle = (start - (int32_t)pct * span / 100 + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
+    // Pointer: uses the exact same formula as the segments so it always aligns perfectly.
+    // Pebble reports pct in multiples of 10, so pct/10 gives the segment index (0-10).
+    int32_t bat_angle = (start + (pct / 10) * step + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
     draw_sec_hand(ctx, bat_angle);
 
     // Battery icon on top of the boss (drawn last in this layer, still below hour/min hands)
