@@ -1,0 +1,31 @@
+[
+  {
+    "type": "heading",
+    "defaultValue": "Los Andes Test",
+    "size": 1
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Seconds Face"
+      },
+      {
+        "type": "radiogroup",
+        "messageKey": "SECONDS_FACE",
+        "label": "",
+        "defaultValue": "0",
+        "options": [
+          { "label": "Show seconds", "value": "0" },
+          { "label": "Show battery", "value": "1" },
+          { "label": "Don't show",   "value": "2" }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "submit",
+    "defaultValue": "Save"
+  }
+]

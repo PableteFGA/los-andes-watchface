@@ -2,29 +2,78 @@
   "name": "los-andes-test",
   "author": "Pablo Godoy",
   "version": "1.0.0",
-  "keywords": ["pebble-app"],
+  "keywords": [
+    "pebble-app"
+  ],
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "pebble-clay": "^1.0.4"
+  },
   "pebble": {
     "displayName": "Los Andes Test",
     "uuid": "3fe83d02-41b0-4373-acb9-ba853cff8445",
     "sdkVersion": "3",
     "enableMultiJS": true,
-    "targetPlatforms": ["gabbro", "emery"],
-    "watchapp": { "watchface": true },
+    "targetPlatforms": [
+      "gabbro",
+      "emery",
+      "basalt"
+    ],
+    "watchapp": {
+      "watchface": true
+    },
+    "messageKeys": [
+      "SECONDS_FACE"
+    ],
     "resources": {
       "media": [
         {
           "type": "bitmap",
           "name": "BACKGROUND",
           "file": "images/los_andes_bg.png",
-          "targetPlatforms": ["gabbro"]
+          "targetPlatforms": [
+            "gabbro"
+          ]
         },
         {
           "type": "bitmap",
           "name": "BACKGROUND",
           "file": "images/los_andes_bg_emery.png",
-          "targetPlatforms": ["emery"]
+          "targetPlatforms": [
+            "emery"
+          ]
+        },
+        {
+          "type": "bitmap",
+          "name": "BACKGROUND",
+          "file": "images/los_andes_bg_basalt.png",
+          "targetPlatforms": [
+            "basalt"
+          ]
+        },
+        {
+          "type": "bitmap",
+          "name": "INDENT",
+          "file": "images/los_andes_bg_indent.png",
+          "targetPlatforms": [
+            "gabbro"
+          ]
+        },
+        {
+          "type": "bitmap",
+          "name": "INDENT",
+          "file": "images/los_andes_bg_emery_indent.png",
+          "targetPlatforms": [
+            "emery"
+          ]
+        },
+        {
+          "type": "bitmap",
+          "name": "INDENT",
+          "file": "images/los_andes_bg_basalt_indent.png",
+          "targetPlatforms": [
+            "basalt"
+          ]
         },
         {
           "type": "bitmap",

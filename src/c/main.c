@@ -11,18 +11,23 @@ static Window  *s_window;
 static Layer   *s_canvas;
 static GPoint   s_center;
 static GBitmap *s_background;
+static GBitmap *s_indent;
 static GBitmap *s_battery_icon;
 
 // Fixed pivot for the seconds hand / battery display (not the watch center)
 #ifdef PBL_PLATFORM_EMERY
 static const GPoint SEC_CENTER = {100, 155};
+#elif defined(PBL_PLATFORM_BASALT)
+static const GPoint SEC_CENTER = {72, 136};
 #else
 static const GPoint SEC_CENTER = {130, 184};
 #endif
 
-// true  → seconds hand + tick marks
-// false → battery indicator (9 segments, 3 zones: red / dark-blue / white)
-static bool s_display_seconds = true;
+// 0 → seconds hand + tick marks
+// 1 → battery indicator
+// 2 → don't show (no subdial, no indent)
+#define PERSIST_KEY_SECONDS_FACE 1
+static int s_seconds_face_mode = 0;
 
 // Shake animation: hour does 1 revolution, minute does 3, over 6 seconds
 #define ANIM_DURATION_MS 3000
@@ -51,6 +56,15 @@ static GPoint s_hour_body_pts[] = {
 static GPoint s_hour_tip_pts[] = {
     { 6, -59},   { 3, -63},   { 2, -65},   {-2, -65},   {-3, -63},   {-6, -59},
 };
+#elif defined(PBL_PLATFORM_BASALT)
+// tip at -52, same width as minute hand (±4 body, ±2 base)
+static GPoint s_hour_body_pts[] = {
+    { 2,  -9},   { 4, -47},   {-4, -47},   {-2,  -9},
+    {-2,   9},   {-2,  20},   { 2,  20},   { 2,   9},
+};
+static GPoint s_hour_tip_pts[] = {
+    { 4, -47},   { 2, -50},   { 1, -52},   {-1, -52},   {-2, -50},   {-4, -47},
+};
 #else
 static GPoint s_hour_body_pts[] = {
     { 3,  -9},   { 5, -72},   {-5, -72},   {-3,  -9},
@@ -73,6 +87,15 @@ static GPoint s_min_body_pts[] = {
 };
 static GPoint s_min_tip_pts[] = {
     { 4, -82},   { 2, -87},   { 1, -90},   {-1, -90},   {-2, -87},   {-4, -82},
+};
+#elif defined(PBL_PLATFORM_BASALT)
+// tip at -72 → touches lateral border (72px from center)
+static GPoint s_min_body_pts[] = {
+    { 2,  -5},   { 4, -66},   {-4, -66},   {-2,  -5},
+    {-2,   5},   {-2,  16},   { 2,  16},   { 2,   5},
+};
+static GPoint s_min_tip_pts[] = {
+    { 4, -66},   { 2, -70},   { 1, -72},   {-1, -72},   {-2, -70},   {-4, -66},
 };
 #else
 static GPoint s_min_body_pts[] = {
@@ -165,14 +188,24 @@ static void draw_hour_hand(GContext *ctx, int32_t angle) {
         { 3, -9}, { 5,-59},   {-5,-59}, {-3, -9},
         {-3,  9}, {-3, 20},   {-3, 20}, { 3, 20},   { 3, 20}, { 3,  9},
     };
+#elif defined(PBL_PLATFORM_BASALT)
+    static const GPoint segs[] = {
+        { 2, -9}, { 4,-47},   {-4,-47}, {-2, -9},
+        {-2,  9}, {-2, 20},   {-2, 20}, { 2, 20},   { 2, 20}, { 2,  9},
+    };
 #else
     static const GPoint segs[] = {
         { 3, -9}, { 5,-72},   {-5,-72}, {-3, -9},
         {-3,  9}, {-3, 20},   {-3, 20}, { 3, 20},   { 3, 20}, { 3,  9},
     };
 #endif
+#ifdef PBL_PLATFORM_BASALT
+    outline_hand(ctx, angle, 7, 17 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
+    fill_hand(ctx, angle, s_hour_body, s_hour_tip, 7);
+#else
     outline_hand(ctx, angle, 10, 17 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
     fill_hand(ctx, angle, s_hour_body, s_hour_tip, 10);
+#endif
 }
 
 static void draw_min_hand(GContext *ctx, int32_t angle) {
@@ -182,6 +215,12 @@ static void draw_min_hand(GContext *ctx, int32_t angle) {
         {-2,  5}, {-2,  16},  {-2, 16}, { 2,  16},  { 2, 16}, { 2,  5},
     };
     outline_hand(ctx, angle, 8, 15 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
+#elif defined(PBL_PLATFORM_BASALT)
+    static const GPoint segs[] = {
+        { 2, -5}, { 4, -66},  {-4, -66},{-2,  -5},
+        {-2,  5}, {-2,  16},  {-2, 16}, { 2,  16},  { 2, 16}, { 2,  5},
+    };
+    outline_hand(ctx, angle, 5, 15 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
 #else
     static const GPoint segs[] = {
         { 3, -7}, { 5,-109},  {-5,-109},{-3,  -7},
@@ -189,17 +228,45 @@ static void draw_min_hand(GContext *ctx, int32_t angle) {
     };
     outline_hand(ctx, angle, 8, 22 * TRIG_MAX_ANGLE / 360, segs, ARRAY_LENGTH(segs));
 #endif
+#ifdef PBL_PLATFORM_BASALT
+    fill_hand(ctx, angle, s_min_body, s_min_tip, 5);
+#else
     fill_hand(ctx, angle, s_min_body, s_min_tip, 8);
+#endif
 }
 
 // ── Seconds hand ────────────────────────────────────────────────────────────
 
 static void draw_sec_hand(GContext *ctx, int32_t angle) {
+#ifdef PBL_PLATFORM_BASALT
+    GPoint cw  = rotate_at(GPoint(0,   5), angle, SEC_CENTER);
+    GPoint mid = rotate_at(GPoint(0, -17), angle, SEC_CENTER);
+    GPoint tip = rotate_at(GPoint(0, -19), angle, SEC_CENTER);
+
+    graphics_context_set_stroke_color(ctx, GColorLightGray);
+    graphics_context_set_stroke_width(ctx, 3);
+    graphics_draw_line(ctx, SEC_CENTER, cw);
+    graphics_context_set_stroke_width(ctx, 2);
+    graphics_draw_line(ctx, SEC_CENTER, mid);
+    graphics_draw_line(ctx, mid, tip);
+
+    graphics_context_set_stroke_color(ctx, GColorWhite);
+    graphics_context_set_stroke_width(ctx, 2);
+    graphics_draw_line(ctx, SEC_CENTER, cw);
+    graphics_context_set_stroke_width(ctx, 1);
+    graphics_draw_line(ctx, SEC_CENTER, mid);
+    graphics_draw_line(ctx, mid, tip);
+
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    graphics_fill_circle(ctx, SEC_CENTER, 2);
+    graphics_context_set_fill_color(ctx, GColorDarkGray);
+    graphics_fill_circle(ctx, SEC_CENTER, 1);
+#else
     GPoint cw  = rotate_at(GPoint(0,   9), angle, SEC_CENTER);
     GPoint mid = rotate_at(GPoint(0, -30), angle, SEC_CENTER);
     GPoint tip = rotate_at(GPoint(0, -34), angle, SEC_CENTER);
 
-    // Outline pass 
+    // Outline pass
     graphics_context_set_stroke_color(ctx, GColorLightGray);
     graphics_context_set_stroke_width(ctx, 5);
     graphics_draw_line(ctx, SEC_CENTER, cw);
@@ -222,6 +289,7 @@ static void draw_sec_hand(GContext *ctx, int32_t angle) {
     graphics_fill_circle(ctx, SEC_CENTER, 3);
     graphics_context_set_fill_color(ctx, GColorDarkGray);
     graphics_fill_circle(ctx, SEC_CENTER, 1);
+#endif
 }
 
 // ── Battery indicator ───────────────────────────────────────────────────────
@@ -245,10 +313,17 @@ static void draw_battery_display(GContext *ctx) {
         int32_t a  = (start + b * step + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
         int32_t sn = sin_lookup(a);
         int32_t cn = cos_lookup(a);
+#ifdef PBL_PLATFORM_BASALT
+        GPoint inner = { SEC_CENTER.x + trig_round(sn * 19),
+                         SEC_CENTER.y - trig_round(cn * 19) };
+        GPoint outer = { SEC_CENTER.x + trig_round(sn * 23),
+                         SEC_CENTER.y - trig_round(cn * 23) };
+#else
         GPoint inner = { SEC_CENTER.x + trig_round(sn * 34),
                          SEC_CENTER.y - trig_round(cn * 34) };
         GPoint outer = { SEC_CENTER.x + trig_round(sn * 40),
                          SEC_CENTER.y - trig_round(cn * 40) };
+#endif
         graphics_draw_line(ctx, inner, outer);
     }
 
@@ -261,8 +336,13 @@ static void draw_battery_display(GContext *ctx) {
         int32_t a  = (start + label_segs[i] * step + TRIG_MAX_ANGLE) % TRIG_MAX_ANGLE;
         int32_t sn = sin_lookup(a);
         int32_t cn = cos_lookup(a);
+#ifdef PBL_PLATFORM_BASALT
+        int16_t tx = SEC_CENTER.x + trig_round(sn * 10);
+        int16_t ty = SEC_CENTER.y - trig_round(cn * 10);
+#else
         int16_t tx = SEC_CENTER.x + trig_round(sn * 18);
         int16_t ty = SEC_CENTER.y - trig_round(cn * 18);
+#endif
         graphics_draw_text(ctx, label_texts[i], small_font,
                            GRect(tx - 10, ty - 5, 20, 10),
                            GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
@@ -328,9 +408,15 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         graphics_fill_rect(ctx, bounds, 0, GCornerNone);
     }
 
+    if (s_indent && s_seconds_face_mode != 2) {
+        graphics_context_set_compositing_mode(ctx, GCompOpSet);
+        graphics_draw_bitmap_in_rect(ctx, s_indent, bounds);
+    }
+
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
     if (!t) return;
+    // t->tm_hour = 11; t->tm_min = 37; t->tm_sec = 6;
 
     int32_t hour_angle, min_angle;
     int32_t sec_angle = t->tm_sec * TRIG_MAX_ANGLE / 30;
@@ -348,22 +434,30 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         min_angle  =  t->tm_min  * TRIG_MAX_ANGLE / 60;
     }
 
+   
     // ── Seconds / battery layer (below hour and minute hands) ────────────────
-    if (s_display_seconds) {
+    if (s_seconds_face_mode == 0) {
         graphics_context_set_stroke_color(ctx, GColorWhite);
         graphics_context_set_stroke_width(ctx, 1);
         for (int i = 0; i < 12; i++) {
             int32_t a = i * TRIG_MAX_ANGLE / 12;
             int32_t s = sin_lookup(a);
             int32_t c = cos_lookup(a);
+#ifdef PBL_PLATFORM_BASALT
+            GPoint inner = { SEC_CENTER.x + trig_round(s * 16),
+                             SEC_CENTER.y - trig_round(c * 16) };
+            GPoint outer = { SEC_CENTER.x + trig_round(s * 19),
+                             SEC_CENTER.y - trig_round(c * 19) };
+#else
             GPoint inner = { SEC_CENTER.x + trig_round(s * 28),
                              SEC_CENTER.y - trig_round(c * 28) };
             GPoint outer = { SEC_CENTER.x + trig_round(s * 33),
                              SEC_CENTER.y - trig_round(c * 33) };
+#endif
             graphics_draw_line(ctx, inner, outer);
         }
         draw_sec_hand(ctx, sec_angle);
-    } else {
+    } else if (s_seconds_face_mode == 1) {
         draw_battery_display(ctx);
     }
 
@@ -373,9 +467,15 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
     // Center axle dot for hour/minute
     graphics_context_set_fill_color(ctx, GColorDarkGray);
+#ifdef PBL_PLATFORM_BASALT
+    graphics_fill_circle(ctx, s_center, 3);
+    graphics_context_set_fill_color(ctx, GColorLightGray);
+    graphics_fill_circle(ctx, GPoint(s_center.x - 1, s_center.y - 1), 1);
+#else
     graphics_fill_circle(ctx, s_center, 4);
     graphics_context_set_fill_color(ctx, GColorLightGray);
     graphics_fill_circle(ctx, GPoint(s_center.x - 2, s_center.y - 2), 1);
+#endif
 }
 
 // ============================================================================
@@ -400,6 +500,7 @@ static void window_load(Window *window) {
     layer_add_child(root, s_canvas);
 
     s_background   = gbitmap_create_with_resource(RESOURCE_ID_BACKGROUND);
+    s_indent       = gbitmap_create_with_resource(RESOURCE_ID_INDENT);
     s_battery_icon = gbitmap_create_with_resource(RESOURCE_ID_BATTERY_ICON);
 
     s_hour_body = gpath_create(&(GPathInfo){ ARRAY_LENGTH(s_hour_body_pts), s_hour_body_pts });
@@ -414,8 +515,26 @@ static void window_unload(Window *window) {
     if (s_min_body)   { gpath_destroy(s_min_body);   s_min_body   = NULL; }
     if (s_min_tip)    { gpath_destroy(s_min_tip);    s_min_tip    = NULL; }
     if (s_background)   { gbitmap_destroy(s_background);   s_background   = NULL; }
+    if (s_indent)       { gbitmap_destroy(s_indent);       s_indent       = NULL; }
     if (s_battery_icon) { gbitmap_destroy(s_battery_icon); s_battery_icon = NULL; }
     if (s_canvas)     { layer_destroy(s_canvas);        s_canvas     = NULL; }
+}
+
+// ============================================================================
+// ============================================================================
+// APP MESSAGE
+// ============================================================================
+
+static void inbox_received(DictionaryIterator *iter, void *context) {
+    Tuple *t = dict_find(iter, MESSAGE_KEY_SECONDS_FACE);
+    if (t) {
+        int mode = (int)atoi(t->value->cstring);
+        if (mode < 0) mode = 0;
+        if (mode > 2) mode = 2;
+        s_seconds_face_mode = mode;
+        persist_write_int(PERSIST_KEY_SECONDS_FACE, mode);
+        if (s_canvas) layer_mark_dirty(s_canvas);
+    }
 }
 
 // ============================================================================
@@ -423,6 +542,10 @@ static void window_unload(Window *window) {
 // ============================================================================
 
 static void init(void) {
+    if (persist_exists(PERSIST_KEY_SECONDS_FACE)) {
+        s_seconds_face_mode = persist_read_int(PERSIST_KEY_SECONDS_FACE);
+    }
+
     s_window = window_create();
     window_set_window_handlers(s_window, (WindowHandlers){
         .load   = window_load,
@@ -431,6 +554,9 @@ static void init(void) {
     window_stack_push(s_window, true);
     tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
     accel_tap_service_subscribe(accel_tap_handler);
+
+    app_message_register_inbox_received(inbox_received);
+    app_message_open(64, 64);
 }
 
 static void deinit(void) {
